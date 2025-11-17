@@ -21,12 +21,14 @@
             animation: spin 1s ease infinite;
         }
         @keyframes spin {
-            0% {
-                transform: rotate(0deg);
-            }
-            100% {
-                transform: rotate(360deg);
-            }
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* Custom class to make IP wrap */
+        .ip-address-wrap {
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+            word-break: break-all;
         }
     </style>
 </head>
@@ -77,7 +79,11 @@
 
         <!-- Results Log Section -->
         <div class="mt-10">
-            <h2 class="text-2xl font-bold mb-4 text-center">Results Log</h2>
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-2xl font-bold">Results Log</h2>
+                <span id="total-entries" class="text-gray-400 font-medium">Total: 0</span>
+            </div>
+            
             <!-- Log Header -->
             <div class="hidden md:grid grid-cols-4 gap-4 px-4 py-2 bg-gray-700 rounded-t-lg font-semibold text-sm text-gray-300">
                 <div>IP Address</div>
@@ -92,8 +98,12 @@
                     <div class="spinner w-8 h-8"></div>
                 </div>
             </div>
+            <!-- Clear Log Button -->
+            <button id="clear-log-button" class="mt-4 w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out disabled:opacity-50">
+                Clear Log
+            </button>
+            <p id="clear-log-status" class="text-center text-sm text-gray-400 mt-2"></p>
         </div>
-
     </div>
 
     <!-- Firebase and App Logic -->
@@ -101,7 +111,7 @@
         // Import Firebase modules
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, setLogLevel, getDocs, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Get DOM elements
         const ipElement = document.getElementById('ip-address');
@@ -111,14 +121,17 @@
         const testButton = document.getElementById('test-button');
         const logContainer = document.getElementById('log-container');
         const logLoading = document.getElementById('log-loading');
+        const totalEntriesElement = document.getElementById('total-entries');
+        const clearLogButton = document.getElementById('clear-log-button');
+        const clearLogStatus = document.getElementById('clear-log-status');
+
 
         // --- Firebase Setup ---
         
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        // STEP 1: PASTE YOUR FIREBASE CONFIG OBJECT HERE
-        // (This should be the config you already have)
+        // PASTE YOUR FIREBASE CONFIG OBJECT HERE
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        const firebaseConfig = {
+       const firebaseConfig = {
             apiKey: "AIzaSyC7hd3-m-teSAfANdeBZtNfnqPXuZrv7Q0",
             authDomain: "my-proxy-tester-5be81.firebaseapp.com",
             projectId: "my-proxy-tester-5be81",
@@ -128,48 +141,32 @@
             measurementId: "G-BH9XW3MHMJ"
         };
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        // STEP 2: SET A UNIQUE NAME FOR YOUR DATABASE COLLECTION
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         const collectionName = "proxy-tests";
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
         let db, auth, logsCollection;
         
-        // Enable verbose logging for Firestore
         // setLogLevel('debug');
 
         try {
-            // Check if config is still the placeholder
             if (firebaseConfig.apiKey === "PASTE_YOUR_API_KEY_HERE") {
-                // Try to get config from user's pasted script
-                if (typeof window.firebaseConfig === 'object') {
-                    Object.assign(firebaseConfig, window.firebaseConfig);
-                } else {
-                    throw new Error("Firebase config is not set. Please edit the HTML file.");
-                }
+                throw new Error("Firebase config is not set. Please edit the HTML file.");
             }
 
             const app = initializeApp(firebaseConfig);
             db = getFirestore(app);
             auth = getAuth(app);
-
-            // Define the public collection path
             logsCollection = collection(db, collectionName);
 
-            // Sign in anonymously
             await signInAnonymously(auth);
             console.log("Firebase Auth success.");
 
-            // Auth is ready, run the initial test
             runTest();
-            // Start listening for log updates
             setupLogListener();
 
         } catch (e) {
             console.error("Error initializing Firebase:", e);
             displayGlobalError(e.message || "Could not connect to database.");
-            
-            // Display auth error prominently if it occurs
             if (e.code === "auth/configuration-not-found") {
                 logLoading.innerHTML = `<p class="text-red-400 text-center p-4"><b>Error:</b> Firebase Anonymous Auth is not enabled. Please enable it in your Firebase project's Authentication -> Sign-in method tab.</p>`;
             }
@@ -189,30 +186,29 @@
         function setupLogListener() {
             if (!logsCollection) return;
 
-            // Listen for real-time updates
             onSnapshot(logsCollection, (snapshot) => {
                 let results = [];
                 snapshot.forEach((doc) => {
-                    results.push(doc.data());
+                    results.push({ id: doc.id, ...doc.data() });
                 });
 
                 // Sort results by TTFB (lowest first)
                 results.sort((a, b) => a.ttfb - b.ttfb);
 
-                // Clear current log
                 logContainer.innerHTML = '';
+                totalEntriesElement.textContent = `Total: ${results.length}`;
 
                 if (results.length === 0) {
                     logContainer.innerHTML = '<p class="text-gray-400 text-center p-4">No results logged yet.</p>';
                     return;
                 }
 
-                // Render sorted results
                 results.forEach(renderLogEntry);
 
             }, (error) => {
                 console.error("Error listening to logs:", error);
                 logContainer.innerHTML = '<p class="text-red-400 text-center p-4">Error loading results.</p>';
+                totalEntriesElement.textContent = `Total: 0`;
             });
         }
 
@@ -222,7 +218,6 @@
             const ip = data.ip || 'N/A';
             const country = data.country || 'N/A';
 
-            // Determine color based on TTFB
             let ttfbColor = 'text-green-400';
             if (ttfb > 500) ttfbColor = 'text-yellow-400';
             if (ttfb > 1000) ttfbColor = 'text-red-400';
@@ -233,7 +228,7 @@
             entry.innerHTML = `
                 <div class="md:hidden font-semibold text-gray-400 text-sm">IP</div>
                 <div class="md:hidden font-semibold text-gray-400 text-sm">Country</div>
-                <div class="font-mono truncate" title="${ip}">${ip}</div>
+                <div class="font-mono ip-address-wrap" title="${ip}">${ip}</div>
                 <div class="truncate" title="${country}">${country}</div>
 
                 <div class="md:hidden font-semibold text-gray-400 text-sm">TTFB</div>
@@ -245,15 +240,12 @@
         }
         
         // --- Test Logic ---
-
-        // Function to run the test
         async function runTest() {
             if (!logsCollection) {
                 console.log("runTest called, but Firestore is not ready.");
                 return;
             }
 
-            // Reset UI and disable button
             ipElement.innerHTML = '<div class="spinner w-6 h-6"></div>';
             latencyElement.innerHTML = '<div class="spinner w-6 h-6"></div>';
             ttfbElement.innerHTML = '<div class="spinner w-6 h-6"></div>';
@@ -266,31 +258,31 @@
             }
             
             const fetchUrl = `https://get.geojs.io/v1/ip/geo.json?_=${new Date().getTime()}`;
+            let ip, country, ttfbMs, totalMs, latencyStr, ttfbStr;
 
             try {
+                // --- Part 1: Fetch IP and Timings ---
                 const startTime = performance.now();
                 const response = await fetch(fetchUrl);
                 const manualEndTime = performance.now(); 
                 
                 if (!response.ok) {
-                    throw new Error(`Network response was not ok: ${response.statusText}`);
+                    throw new Error(`Fetch failed: ${response.statusText}`);
                 }
-
                 const data = await response.json();
                 
                 if (!data || !data.ip) {
-                    throw new Error('Failed to fetch valid IP/location data');
+                    throw new Error('Invalid IP data');
                 }
                 
-                const ip = data.ip;
-                const country = data.country; 
+                ip = data.ip;
+                country = data.country; 
 
                 // --- Advanced Measurement ---
-                let ttfbMs = 0;
-                let totalMs = Math.round(manualEndTime - startTime);
-                
-                let latencyStr = `${totalMs} ms`;
-                let ttfbStr = 'N/A';
+                ttfbMs = 0;
+                totalMs = Math.round(manualEndTime - startTime);
+                latencyStr = `${totalMs} ms`;
+                ttfbStr = 'N/A';
 
                 if (window.performance && window.performance.getEntriesByName) {
                     const entries = window.performance.getEntriesByName(fetchUrl);
@@ -298,42 +290,42 @@
                         const timing = entries[0];
                         totalMs = Math.round(timing.duration);
                         
-                        // *** FIX FOR NEGATIVE TTFB ***
-                        // Ensure responseStart is a valid, positive number
                         if (timing.responseStart > 0 && timing.responseStart > timing.fetchStart) {
                            ttfbMs = Math.round(timing.responseStart - timing.fetchStart);
                            ttfbStr = `${ttfbMs} ms`;
-                        } else {
-                            // Fallback if timing data is weird
-                            ttfbMs = 0; 
-                            ttfbStr = 'N/A'; 
                         }
-                        
                         latencyStr = `${totalMs} ms`;
                     }
                 }
-                // --- End Advanced Measurement ---
-
+                
                 // Update UI with current test results
                 ipElement.textContent = ip;
                 latencyElement.textContent = latencyStr;
                 ttfbElement.textContent = ttfbStr;
-                locationElement.textContent = country || 'N/IA';
+                locationElement.textContent = country || 'N/A';
 
-                // --- Save to Firestore ---
-                await addDoc(logsCollection, {
-                    ip: ip,
-                    country: country || 'N/A',
-                    ttfb: ttfbMs,
-                    totalDownload: totalMs,
-                    timestamp: serverTimestamp()
-                });
-                console.log("Test result saved to Firestore.");
-
+                // --- Part 2: Save to Firestore ---
+                try {
+                    await addDoc(logsCollection, {
+                        ip: ip,
+                        country: country || 'N/A',
+                        ttfb: ttfbMs,
+                        totalDownload: totalMs,
+                        timestamp: serverTimestamp()
+                    });
+                    console.log("Test result saved to Firestore.");
+                } catch (saveError) {
+                    console.error("Error saving to Firestore:", saveError);
+                    // Show save error on the UI
+                    ipElement.textContent = 'Error: Save failed';
+                    ipElement.classList.add('text-red-400');
+                }
 
             } catch (error) {
                 console.error("Error fetching IP/Location:", error);
-                ipElement.textContent = 'Error';
+                // Show fetch error on the UI
+                ipElement.textContent = `Error: ${error.message}`;
+                ipElement.classList.add('text-red-400');
                 latencyElement.textContent = 'Error';
                 ttfbElement.textContent = 'Error';
                 locationElement.textContent = 'Error';
@@ -343,9 +335,39 @@
                 testButton.textContent = 'Test Again';
             }
         }
+        
+        // --- Clear Log Logic ---
+        async function clearLog() {
+            clearLogButton.disabled = true;
+            clearLogStatus.textContent = "Clearing... this may take a moment.";
+            console.log("Starting to clear log...");
 
-        // Add click listener to the button
+            try {
+                const querySnapshot = await getDocs(logsCollection);
+                let deletePromises = [];
+                
+                querySnapshot.forEach((doc) => {
+                    deletePromises.push(deleteDoc(doc.ref));
+                });
+
+                await Promise.all(deletePromises);
+                
+                console.log("Log cleared successfully.");
+                clearLogStatus.textContent = "Log cleared successfully.";
+            } catch (error) {
+                console.error("Error clearing log:", error);
+                clearLogStatus.textContent = "Error clearing log.";
+            } finally {
+                clearLogButton.disabled = false;
+                // Status message will fade after 3 seconds
+                setTimeout(() => { clearLogStatus.textContent = ""; }, 3000);
+            }
+        }
+
+        // Add click listeners
         testButton.addEventListener('click', runTest);
+        clearLogButton.addEventListener('click', clearLog);
+
     </script>
 </body>
 </html>
