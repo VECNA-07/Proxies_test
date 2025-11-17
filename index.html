@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proxy & Latency Tester</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Using Inter font */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Simple loading spinner */
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #09f;
+            animation: spin 1s ease infinite;
+        }
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen p-4 py-12">
+
+    <div class="bg-gray-800 p-8 rounded-2xl shadow-2xl w-full max-w-xl mx-auto">
+        <h1 class="text-3xl font-bold text-center mb-6 text-blue-400">Proxy Tester</h1>
+        
+        <!-- Current Test Section -->
+        <div class="space-y-4">
+            <!-- IP Address Section -->
+            <div class="bg-gray-700 p-5 rounded-lg">
+                <h2 class="text-sm font-semibold text-gray-400 mb-1">Your IP Address</h2>
+                <div id="ip-address" class="text-2xl font-semibold h-9">
+                    <div class="spinner w-6 h-6"></div>
+                </div>
+            </div>
+
+            <!-- Latency Section -->
+            <div class="bg-gray-700 p-5 rounded-lg">
+                <h2 class="text-sm font-semibold text-gray-400 mb-1">Total Download</h2>
+                <div id="latency" class="text-2xl font-semibold h-9">
+                    <div class="spinner w-6 h-6"></div>
+                </div>
+            </div>
+
+            <!-- TTFB Section -->
+            <div class="bg-gray-700 p-5 rounded-lg">
+                <h2 class="text-sm font-semibold text-gray-400 mb-1">Time to First Byte (TTFB)</h2>
+                <div id="ttfb" class="text-2xl font-semibold h-9">
+                    <div class="spinner w-6 h-6"></div>
+                </div>
+            </div>
+
+            <!-- Location Section -->
+            <div class="bg-gray-700 p-5 rounded-lg">
+                <h2 class="text-sm font-semibold text-gray-400 mb-1">Location (Country)</h2>
+                <div id="location-info" class="text-2xl font-semibold h-9">
+                    <div class="spinner w-6 h-6"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Button to re-run the test -->
+        <button id="test-button" class="mt-8 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300 ease-in-out disabled:opacity-50">
+            Test Again
+        </button>
+
+        <!-- Results Log Section -->
+        <div class="mt-10">
+            <h2 class="text-2xl font-bold mb-4 text-center">Results Log</h2>
+            <!-- Log Header -->
+            <div class="hidden md:grid grid-cols-4 gap-4 px-4 py-2 bg-gray-700 rounded-t-lg font-semibold text-sm text-gray-300">
+                <div>IP Address</div>
+                <div>Country</div>
+                <div>TTFB (ms)</div>
+                <div>Total (ms)</div>
+            </div>
+            <!-- Log Container -->
+            <div id="log-container" class="space-y-2 md:space-y-0 max-h-96 overflow-y-auto">
+                <!-- Log entries will be injected here -->
+                <div id="log-loading" class="flex justify-center items-center p-8">
+                    <div class="spinner w-8 h-8"></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Firebase and App Logic -->
+    <script type="module">
+        // Import Firebase modules
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Get DOM elements
+        const ipElement = document.getElementById('ip-address');
+        const latencyElement = document.getElementById('latency');
+        const ttfbElement = document.getElementById('ttfb');
+        const locationElement = document.getElementById('location-info');
+        const testButton = document.getElementById('test-button');
+        const logContainer = document.getElementById('log-container');
+        const logLoading = document.getElementById('log-loading');
+
+        // --- Firebase Setup ---
+        let db, auth, userId, appId;
+        let logsCollection;
+
+        // Use injected Firebase config and App ID
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        appId = typeof __app_id !== 'undefined' ? __app_id : 'default-proxy-test';
+        
+        // Enable verbose logging for Firestore
+        // setLogLevel('debug');
+
+        try {
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+
+            // Set up Auth state listener
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    console.log("Firebase Auth success. UserID:", user.uid);
+                    userId = user.uid;
+                    // Define the public collection path
+                    const collectionPath = `/artifacts/${appId}/public/data/proxy-tests`;
+                    logsCollection = collection(db, collectionPath);
+                    
+                    // Auth is ready, run the initial test
+                    runTest();
+                    // Start listening for log updates
+                    setupLogListener();
+                } else {
+                    console.log("User is signed out.");
+                    userId = null;
+                }
+            });
+
+            // Sign in
+            authenticate();
+
+        } catch (e) {
+            console.error("Error initializing Firebase:", e);
+            displayGlobalError("Could not connect to database.");
+        }
+
+        async function authenticate() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase Auth Error:", error);
+                displayGlobalError("Authentication failed.");
+            }
+        }
+        
+        function displayGlobalError(message) {
+            ipElement.textContent = 'Error';
+            latencyElement.textContent = 'Error';
+            ttfbElement.textContent = 'Error';
+            locationElement.textContent = 'Error';
+            logLoading.innerHTML = `<p class="text-red-400 text-center p-4">${message}</p>`;
+        }
+
+        // --- Log Display Logic ---
+        function setupLogListener() {
+            if (!logsCollection) return;
+
+            // Listen for real-time updates
+            onSnapshot(logsCollection, (snapshot) => {
+                let results = [];
+                snapshot.forEach((doc) => {
+                    results.push(doc.data());
+                });
+
+                // Sort results by TTFB (lowest first)
+                // We fetch all and sort in memory as per instructions
+                results.sort((a, b) => a.ttfb - b.ttfb);
+
+                // Clear current log
+                logContainer.innerHTML = '';
+
+                if (results.length === 0) {
+                    logContainer.innerHTML = '<p class="text-gray-400 text-center p-4">No results logged yet.</p>';
+                    return;
+                }
+
+                // Render sorted results
+                results.forEach(renderLogEntry);
+
+            }, (error) => {
+                console.error("Error listening to logs:", error);
+                logContainer.innerHTML = '<p class="text-red-400 text-center p-4">Error loading results.</p>';
+            });
+        }
+
+        function renderLogEntry(data) {
+            const ttfb = data.ttfb || 0;
+            const total = data.totalDownload || 0;
+            const ip = data.ip || 'N/A';
+            const country = data.country || 'N/A';
+
+            // Determine color based on TTFB
+            let ttfbColor = 'text-green-400';
+            if (ttfb > 500) ttfbColor = 'text-yellow-400';
+            if (ttfb > 1000) ttfbColor = 'text-red-400';
+
+            const entry = document.createElement('div');
+            entry.className = 'grid grid-cols-2 md:grid-cols-4 gap-4 px-4 py-3 bg-gray-800 md:bg-transparent rounded-lg md:rounded-none border-b border-gray-700';
+            
+            entry.innerHTML = `
+                <div class="md:hidden font-semibold text-gray-400 text-sm">IP</div>
+                <div class="md:hidden font-semibold text-gray-400 text-sm">Country</div>
+                <div class="font-mono truncate" title="${ip}">${ip}</div>
+                <div class="truncate" title="${country}">${country}</div>
+
+                <div class="md:hidden font-semibold text-gray-400 text-sm">TTFB</div>
+                <div class="md:hidden font-semibold text-gray-400 text-sm">Total</div>
+                <div class="font-mono ${ttfbColor}">${ttfb} ms</div>
+                <div class="font-mono text-gray-400">${total} ms</div>
+            `;
+            logContainer.appendChild(entry);
+        }
+        
+        // --- Test Logic ---
+
+        // Function to run the test
+        async function runTest() {
+            // Don't run test if Firebase isn't ready
+            if (!logsCollection) {
+                console.log("runTest called, but Firestore is not ready. Waiting for auth.");
+                return;
+            }
+
+            // Reset UI and disable button
+            ipElement.innerHTML = '<div class="spinner w-6 h-6"></div>';
+            latencyElement.innerHTML = '<div class="spinner w-6 h-6"></div>';
+            ttfbElement.innerHTML = '<div class="spinner w-6 h-6"></div>';
+            locationElement.innerHTML = '<div class="spinner w-6 h-6"></div>';
+            testButton.disabled = true;
+            testButton.textContent = 'Testing...';
+
+            if (window.performance && window.performance.clearResourceTimings) {
+                window.performance.clearResourceTimings();
+            }
+            
+            const fetchUrl = `https://get.geojs.io/v1/ip/geo.json?_=${new Date().getTime()}`;
+
+            try {
+                const startTime = performance.now();
+                const response = await fetch(fetchUrl);
+                const manualEndTime = performance.now(); 
+                
+                if (!response.ok) {
+                    throw new Error(`Network response was not ok: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                
+                if (!data || !data.ip) {
+                    throw new Error('Failed to fetch valid IP/location data');
+                }
+                
+                const ip = data.ip;
+                const country = data.country; 
+
+                // --- Advanced Measurement ---
+                let ttfbMs = 0;
+                let totalMs = Math.round(manualEndTime - startTime);
+                
+                let latencyStr = `${totalMs} ms`;
+                let ttfbStr = 'N/A';
+
+                if (window.performance && window.performance.getEntriesByName) {
+                    const entries = window.performance.getEntriesByName(fetchUrl);
+                    if (entries.length > 0) {
+                        const timing = entries[0];
+                        totalMs = Math.round(timing.duration);
+                        ttfbMs = Math.round(timing.responseStart - timing.fetchStart);
+
+                        latencyStr = `${totalMs} ms`;
+                        ttfbStr = `${ttfbMs} ms`;
+                    }
+                }
+                // --- End Advanced Measurement ---
+
+                // Update UI with current test results
+                ipElement.textContent = ip;
+                latencyElement.textContent = latencyStr;
+                ttfbElement.textContent = ttfbStr;
+                locationElement.textContent = country || 'N/A';
+
+                // --- Save to Firestore ---
+                await addDoc(logsCollection, {
+                    ip: ip,
+                    country: country || 'N/A',
+                    ttfb: ttfbMs,
+                    totalDownload: totalMs,
+                    timestamp: serverTimestamp()
+                });
+                console.log("Test result saved to Firestore.");
+
+
+            } catch (error) {
+                console.error("Error fetching IP/Location:", error);
+                ipElement.textContent = 'Error';
+                latencyElement.textContent = 'Error';
+                ttfbElement.textContent = 'Error';
+                locationElement.textContent = 'Error';
+            } finally {
+                // Re-enable button
+                testButton.disabled = false;
+                testButton.textContent = 'Test Again';
+            }
+        }
+
+        // Add click listener to the button
+        testButton.addEventListener('click', runTest);
+
+        // NOTE: Initial runTest() is now called after auth is successful.
+    </script>
+</body>
+</html>
